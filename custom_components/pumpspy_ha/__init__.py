@@ -159,7 +159,11 @@ class PumpspyCoordinator(DataUpdateCoordinator):
         # if self.monthly:
         #     intervals.append("month")
         try:
-            return await self.api.fetch_data(intervals=self.intervals)
+            data = await self.api.fetch_data(intervals=self.intervals)
+            # Minimal guard: don't replace cached data with empty/invalid payload
+            if not data or not data.get("current"):
+                raise UpdateFailed("No current data")
+            return data
         except InvalidAccessToken:
             _LOGGER.info("Access token expired, will try again")
             raise UpdateFailed("Access token expired")
