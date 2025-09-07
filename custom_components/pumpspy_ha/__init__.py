@@ -161,6 +161,8 @@ class PumpspyCoordinator(DataUpdateCoordinator):
         try:
             return await self.api.fetch_data(intervals=self.intervals)
         except InvalidAccessToken:
+            _LOGGER.info("Access token expired, will try again")
             raise UpdateFailed("Access token expired")
         except ConnectionError as err:
-            raise UpdateFailed(f"Connection error: {err}") from err
+            _LOGGER.error(err)
+            raise UpdateFailed(f"Connection error: {err}")
