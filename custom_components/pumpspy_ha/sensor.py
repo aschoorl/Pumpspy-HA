@@ -204,27 +204,53 @@ class TotalingSensor(PumpspyEntity, SensorEntity):
     @property
     def native_value(self) -> StateType | date | datetime | Decimal:
         try:
-            data = self.coordinator.data[self._motor][self._interval_converted][0]
-            data_type = "total_count" if self._type == CONF_CYCLES else self._type
-            if data["year_num"] != datetime.now().year:
+            records = self.coordinator.data[self._motor][self._interval_converted]
+            if not records:
                 return 0
-            elif (
-                self._interval == CONF_WEEKLY
-                and data["week_num"] == datetime.now().isocalendar().week
-            ):
-                return data[data_type]
-            elif data["month_num"] == datetime.now().month:
-                if (
-                    self._interval == CONF_DAILY
-                    and data["day_num"] == datetime.now().day
-                ):
-                    return data[data_type]
+
+            now = datetime.now()
+            data = None
+
+            for entry in records:
+                if entry.get("year_num") != now.year:
+                    continue
+
+                if self._interval == CONF_DAILY:
+                    if (
+                        entry.get("month_num") == now.month
+                        and entry.get("day_num") == now.day
+                    ):
+                        data = entry
+                        break
+
+                elif self._interval == CONF_WEEKLY:
+                    if entry.get("week_num") == now.isocalendar().week:
+                        data = entry
+                        break
+
                 elif self._interval == CONF_MONTHLY:
-                    return data[data_type]
-                else:
-                    return 0
-            else:
+                    if entry.get("month_num") == now.month:
+                        data = entry
+                        break
+
+            if data is None:
                 return 0
+
+            keys = (
+                ("total_count", "count")
+                if self._type == CONF_CYCLES
+                else ("gallons", "total_gallons")
+            )
+            value = None
+            for key in keys:
+                value = data.get(key)
+                if value is not None:
+                    break
+
+            if value is None:
+                return 0
+
+            return value
         except Exception:  # pylint: disable=broad-except
             return 0
 

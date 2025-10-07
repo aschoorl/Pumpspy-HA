@@ -17,7 +17,6 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
-    UpdateFailed,
 )
 
 
@@ -81,7 +80,6 @@ async def async_update_options(hass: HomeAssistant, config_entry: ConfigEntry):
 async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Unload a config entry."""
 
-    coordinator: PumpspyCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     unload_ok = await hass.config_entries.async_unload_platforms(
         config_entry, PLATFORMS
     )
@@ -115,7 +113,6 @@ async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> 
             ent_reg.async_remove(entity_id)
 
     if unload_ok:
-        await coordinator.api.async_close()
         hass.data[DOMAIN].pop(config_entry.entry_id)
 
     return unload_ok
@@ -161,14 +158,8 @@ class PumpspyCoordinator(DataUpdateCoordinator):
         # if self.monthly:
         #     intervals.append("month")
         try:
-            data = await self.api.fetch_data(intervals=self.intervals)
-            # Minimal guard: don't replace cached data with empty/invalid payload
-            if not data or not data.get("current"):
-                raise UpdateFailed("No current data")
-            return data
+            return await self.api.fetch_data(intervals=self.intervals)
         except InvalidAccessToken:
             _LOGGER.info("Access token expired, will try again")
-            raise UpdateFailed("Access token expired")
         except ConnectionError as err:
             _LOGGER.error(err)
-            raise UpdateFailed(f"Connection error: {err}")

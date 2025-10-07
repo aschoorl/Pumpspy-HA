@@ -7,6 +7,7 @@ from datetime import date
 
 AUTH_USERNAME = "IOS"
 AUTH_PASSWORD = "secret"
+MAX_TOKEN_ATTEMPTS = 5
 
 # LIST OF ENDPOINTS
 BASE_URL = "http://www.pumpspy.com:8081"
@@ -29,17 +30,17 @@ device_types = {
     3: {"endpoint": "bbs", "interval_endpoint": "bbs", "has_backup": True},
     4: {
         "endpoint": "rht_outlets",
-        "interval_endpoint": "rht_outlet",
+        "interval_endpoint": "pump_outlet",
         "has_backup": False,
     },
     5: {
         "endpoint": "rht_outlets",
-        "interval_endpoint": "rht_outlet",
+        "interval_endpoint": "pump_outlet",
         "has_backup": False,
     },
     6: {
         "endpoint": "rht_outlets",
-        "interval_endpoint": "rht_outlet",
+        "interval_endpoint": "pump_outlet",
         "has_backup": False,
     },
 }
@@ -90,9 +91,9 @@ class Pumpspy:
             self.iddevice_type = device_info[0]["iddevice_types"]
             self.device_name = device_info[0]["device_types_name"]
 
-                # init_data = await self.fetch_current_data(session=session)
-                # LOG.debug("Got device nickname of %s", init_data[0]["user_nickname"])
-                # self.device_name = init_data[0]["user_nickname"]
+            # init_data = await self.fetch_current_data(session=session)
+            # LOG.debug("Got device nickname of %s", init_data[0]["user_nickname"])
+            # self.device_name = init_data[0]["user_nickname"]
 
     async def get_token(self) -> None:
         """Get bearer token"""
@@ -107,33 +108,52 @@ class Pumpspy:
             "password": self.password,
         }
 
-        async with aiohttp.ClientSession() as session:
-            while True:
-                try:
-                    async with session.post(
-                        f"{BASE_URL}{TOKEN_URL}",
-                        auth=aiohttp.BasicAuth(AUTH_USERNAME, AUTH_PASSWORD),
-                        headers=headers,
-                        data=data,
-                    ) as resp:
-                        if resp.status == 200:
-                            response = await resp.json()
-                            access_token = response["access_token"]
-                            LOG.debug("Got an access token of %s", access_token)
-                            self.access_token = access_token
-                        else:
-                            LOG.error(
-                                "Error getting authorization: %s", await resp.text()
-                            )
-                            return None
-                        break
-                except (
-                    aiohttp.ServerDisconnectedError,
-                    aiohttp.ClientResponseError,
-                    aiohttp.ClientConnectorError,
-                ) as err:
-                    LOG.debug("Oops, the server connection was dropped: %s", err)
-                    await asyncio.sleep(1)  # don't hammer the server
+        backoff = 1.0
+
+        for attempt in range(1, MAX_TOKEN_ATTEMPTS + 1):
+            session = await self._ensure_session()
+            try:
+                async with session.post(
+                    f"{BASE_URL}{TOKEN_URL}",
+                    auth=aiohttp.BasicAuth(AUTH_USERNAME, AUTH_PASSWORD),
+                    headers=headers,
+                    data=data,
+                ) as resp:
+                    if resp.status == 200:
+                        response = await resp.json()
+                        access_token = response["access_token"]
+                        LOG.debug("Got an access token of %s", access_token)
+                        self.access_token = access_token
+                        return
+
+                    error_text = await resp.text()
+                    if resp.status >= 500:
+                        LOG.debug(
+                            "Token request attempt %s returned %s: %s",
+                            attempt,
+                            resp.status,
+                            error_text,
+                        )
+                    else:
+                        LOG.error(
+                            "Error getting authorization (status %s): %s",
+                            resp.status,
+                            error_text,
+                        )
+                        return
+
+            except (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError) as err:
+                LOG.debug(
+                    "Token request attempt %s failed with network error: %s", attempt, err
+                )
+
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 10)
+            await self.async_close()
+
+        raise ConnectionError(
+            f"Failed to obtain PumpSpy access token after {MAX_TOKEN_ATTEMPTS} attempts"
+        )
 
     async def get_uid(
         self, session: aiohttp.ClientSession | None = None
@@ -165,6 +185,9 @@ class Pumpspy:
                 aiohttp.ServerDisconnectedError,
                 aiohttp.ClientResponseError,
                 aiohttp.ClientConnectorError,
+                aiohttp.ClientOSError,
+                ConnectionResetError,
+                asyncio.TimeoutError,
             ) as err:
                 LOG.debug("Oops, the server connection was dropped: %s", err)
                 await asyncio.sleep(1)  # don't hammer the server
@@ -192,6 +215,9 @@ class Pumpspy:
                 aiohttp.ServerDisconnectedError,
                 aiohttp.ClientResponseError,
                 aiohttp.ClientConnectorError,
+                aiohttp.ClientOSError,
+                ConnectionResetError,
+                asyncio.TimeoutError,
             ) as err:
                 LOG.debug("Oops, the server connection was dropped: %s", err)
                 await asyncio.sleep(1)  # don't hammer the server
@@ -218,6 +244,9 @@ class Pumpspy:
                 aiohttp.ServerDisconnectedError,
                 aiohttp.ClientResponseError,
                 aiohttp.ClientConnectorError,
+                aiohttp.ClientOSError,
+                ConnectionResetError,
+                asyncio.TimeoutError,
             ) as err:
                 LOG.debug("Oops, the server connection was dropped: %s", err)
                 await asyncio.sleep(1)  # don't hammer the server
@@ -247,6 +276,9 @@ class Pumpspy:
                 aiohttp.ServerDisconnectedError,
                 aiohttp.ClientResponseError,
                 aiohttp.ClientConnectorError,
+                aiohttp.ClientOSError,
+                ConnectionResetError,
+                asyncio.TimeoutError,
             ) as err:
                 LOG.debug("Oops, the server connection was dropped: %s", err)
                 await asyncio.sleep(1)  # don't hammer the server
@@ -274,14 +306,15 @@ class Pumpspy:
                 data["current"] = await self.fetch_current_data(session=session)
 
                 for interval in intervals:
-                    data["ac"][interval] = await self.fetch_interval_data(
+                    ac_data = await self.fetch_interval_data(
                         session=session, motor="ac", interval=interval
                     )
+                    data["ac"][interval] = ac_data or []
                     if self.has_backup() is True:
-                        data["dc"][interval] = await self.fetch_interval_data(
+                        dc_data = await self.fetch_interval_data(
                             session=session, motor="dc", interval=interval
                         )
-                LOG.debug(data)
+                        data["dc"][interval] = dc_data or []
                 return data
             except InvalidAccessToken:
                 await self.get_token()
@@ -292,6 +325,9 @@ class Pumpspy:
                 aiohttp.ServerDisconnectedError,
                 aiohttp.ClientResponseError,
                 aiohttp.ClientConnectorError,
+                aiohttp.ClientOSError,
+                ConnectionResetError,
+                asyncio.TimeoutError,
             ) as err:
                 LOG.debug("Oops, the server connection was dropped: %s", err)
                 await asyncio.sleep(1)  # don't hammer the server
@@ -324,13 +360,20 @@ class Pumpspy:
         updated_url = f"{updated_url}/interval/{interval}"
         LOG.debug("Querying api: %s", updated_url)
         async with session.get(updated_url, headers=self.authed_headers()) as resp:
-            response = await resp.json()
+            try:
+                response = await resp.json()
+            except aiohttp.ContentTypeError:
+                response = await resp.text()
             if resp.status == 200:
                 return response
-            elif resp.status == 401 and response["error"] == "invalid_token":
+            elif (
+                resp.status == 401
+                and isinstance(response, dict)
+                and response.get("error") == "invalid_token"
+            ):
                 raise InvalidAccessToken
             else:
-                LOG.error("Error fetching current data: %s", await resp.text())
+                LOG.error("Error fetching interval data: %s", response)
                 return None
 
     def authed_headers(self):
