@@ -343,7 +343,7 @@ class Pumpspy:
             elif resp.status == 401 and response["error"] == "invalid_token":
                 raise InvalidAccessToken
             else:
-                LOG.error("Error fetching current data: %s", await resp.text())
+                LOG.warning("Error fetching current data (status %s): %s", resp.status, await resp.text())
                 return None
 
     async def fetch_interval_data(

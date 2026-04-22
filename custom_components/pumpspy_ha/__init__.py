@@ -17,6 +17,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
+    UpdateFailed,
 )
 
 
@@ -152,14 +153,14 @@ class PumpspyCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         """Fetch data from API endpoint."""
-        # intervals = ["day"]
-        # if self.weekly:
-        #     intervals.append("week")
-        # if self.monthly:
-        #     intervals.append("month")
         try:
-            return await self.api.fetch_data(intervals=self.intervals)
+            data = await self.api.fetch_data(intervals=self.intervals)
         except InvalidAccessToken:
-            _LOGGER.info("Access token expired, will try again")
+            raise UpdateFailed("Access token expired, will retry")
         except ConnectionError as err:
-            _LOGGER.error(err)
+            raise UpdateFailed(str(err))
+
+        if not data or data.get("current") is None:
+            raise UpdateFailed("Server returned incomplete data")
+
+        return data
